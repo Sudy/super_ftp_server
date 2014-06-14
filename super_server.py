@@ -289,6 +289,7 @@ class FTPConnection:
 			return
 		os.rmdir(local)
 		self.send_msg(250, "OK")
+	
 	def handle_LIST(self, arg):
 		if not self.data_connect(): return 
 		self.send_msg(125, "OK")

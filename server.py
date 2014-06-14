@@ -5,7 +5,9 @@ import socket
 import os
 import threading
 from interface import Command,Connection
+from tools import get_logger
 import select
+import stat,time
 
 
 host = "127.0.0.1"
@@ -23,38 +25,31 @@ default_dir = os.path.normpath(os.path.abspath(os.curdir)).replace('\\', '/')
 def main():
 	pass
 
-def get_logger(handler = logging.StreamHandler()):
-	logger = logging.getLogger()
-	formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-	handler.setFormatter(formatter)
-	logger.addHandler(handler)
-	logger.setLevel(logging.NOTSET)
-	return logger
 
 def parse_opts(opts):
 	global tcp_port,udp_port,http_port,logger
 	
 	#create a logger
 	logger =  get_logger()
-	for arg,parm in opts:
+	for arg,param in opts:
 		if arg == '-h':
 			usage()
 			sys.exit(0)
 		elif arg == '-u': 
 			try:
-				udp_port = int(arg)
+				udp_port = int(param)
 			except Exception as e:
 				usage()
 				sys.exit(0)
 		elif arg == '-p':
 			try:
-				tcp_port = int(arg)
+				tcp_port = int(param)
 			except Exception as e:
 				usage()
 				sys.exit(0)		
 		elif arg == '-t':
 			try:
-				http_port = int(arg)
+				http_port = int(param)
 			except Exception as e:
 				usage()
 				sys.exit(0)	
@@ -118,7 +113,6 @@ class FTP_UDP_Connection(Connection):
 	def __init__(self,fd):
 		super(FTP_UDP_Connection,self).__init__()
 		self.fd = fd
-		self.client_addr = None
 		self.running = True
 
 		self.command_list = {"LIST":self.command_LIST,
@@ -129,23 +123,62 @@ class FTP_UDP_Connection(Connection):
 		}
 
 	def command_LIST(self,client_addr,args):
-		self.send_message(client_addr,200,"OK")
+
+		# self.send_message(client_addr,125, "OK")
+		template = "%s%s%s------- %04u %8s %8s %8lu %s %s\n"
+		message = ""
+		for filename in os.listdir('.'):
+			path =  './' + filename
+			if os.path.isfile(path) or os.path.isdir(path): # ignores link or block file
+				status = os.stat(path)
+				msg = template % (
+					'd' if os.path.isdir(path) else '-',
+					'r', 'w', 1, '0', '0', 
+					status[stat.ST_SIZE], 
+					time.strftime("%b %d  %Y", time.localtime(status[stat.ST_MTIME])), 
+					filename)
+				message += msg
+		self.send_message(client_addr,220,message)
+		# self.send_message(client_addr,226, "Limit")
+		# self.send_message(client_addr,200,"OK")
 		
-	def command_SIZE(self):
-		pass
-	def command_STORE(self):
-		pass
-	def command_RETR(self):
-		pass
-	def command_BYE(self):
-		pass
+	def command_SIZE(self,client_addr,args):
+		if len(args) > 1:
+			self.send_message(client_addr,500,"SZIE filename")
+		msg = "\n%s size: %s"%(args[0],str(os.path.getsize(args[0])))
+		self.send_message(client_addr,231,msg)
+		
+	def command_STORE(self,client_addr,args):
+		if len(args) != 1:
+			self.send_message(client_addr,500,"STORE filename")
+		with open(args[0],'w') as fp:
+			while True:
+				data,addr = self.fd.recvfrom(2048)
+				if not data:
+					break
+				fp.write(data)
+				fp.flush()
+	def command_RETR(self,client_addr,args):
+		if len(args) != 1:
+			self.send_message(client_addr,500,"RETR filename")
+		with open(args[0],'r') as fp:
+			while  True:
+				data = fp.read(2048)
+				if not data:
+					break
+				self.fd.sendto(data,client_addr)
+		#self.send_message(client_addr,200,"%s send finished!"%args[0])
+		
+	def command_BYE(self,client_addr,args):
+		self.running = False
+		self.send_message(client_addr, 200, "OK")
 	def start(self):
 		try:
 			while self.running:
 				client_addr,success,command,args = self.recv()
 				if not success:
 					logger.info("recv no command")
-					self.send_message(500,"recv no command",client_addr)
+					self.send_message(client_addr,500,"recv no command")
 					continue
 				else:
 					command = command.upper()
