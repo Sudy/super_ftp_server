@@ -133,8 +133,7 @@ class FTP_TCP_Connection(Connection):
 		with open('test/' + args[0],'w') as fp:
 			while True:
 				data = self.fd.recv(2048)
-				print data
-				if data.strip() == "EOF":
+				if data == "EOF":
 					break
 				fp.write(data)
 				fp.flush()
