@@ -4,7 +4,7 @@ import logging
 import socket
 import os
 import threading
-from interface import Command,Connection
+from interface import Connection
 from tools import get_logger
 import select
 import stat,time
@@ -14,16 +14,11 @@ host = "127.0.0.1"
 tcp_port = 10030
 udp_port = 10040
 http_port = 10050
-max_conn = 10
 
 timeout = 60
 
 default_dir = os.path.normpath(os.path.abspath(os.curdir)).replace('\\', '/')
 
-
-
-def main():
-	pass
 
 
 def parse_opts(opts):
@@ -63,20 +58,6 @@ def usage():
 	''' % sys.argv[0]
 
 
-
-class TCP_Command(Command):
-	def __init__(self, arg):
-		super(TCP_Command, self).__init__()
-		self.arg = arg
-
-class UDP_Command(Command):
-	"""docstring for UDP_Command"""
-	def __init__(self, arg):
-		super(UDP_Command, self).__init__()
-		self.arg = arg
-		
-
-
 class HTTPConnection:
 	def __init__(self, fd, remote_ip):
 		self.fd = fd
@@ -109,36 +90,153 @@ class HTTPConnection:
 
 
 
+
+class FTP_TCP_Connection(Connection):
+
+	def __init__(self, fd):
+		super(FTP_TCP_Connection,self).__init__(fd)
+
+	def command_LIST(self,args):
+
+		# self.send_message(client_addr,125, "OK")
+		try:
+			template = "%s%s%s------- %04u %8s %8s %8lu %s %s\n"
+			message = ""
+			for filename in os.listdir('.'):
+				path =  './' + filename
+				if os.path.isfile(path) or os.path.isdir(path): # ignores link or block file
+					status = os.stat(path)
+					msg = template % (
+						'd' if os.path.isdir(path) else '-',
+						'r', 'w', 1, '0', '0', 
+						status[stat.ST_SIZE], 
+						time.strftime("%b %d  %Y", time.localtime(status[stat.ST_MTIME])), 
+						filename)
+					message += msg
+			self.send_message(220,message)
+		except Exception as e:
+			self.send_message(500,"listdir error")
+			logger.error(e)
+		# self.send_message 226, "Limit")
+		# self.send_message 200,"OK")
+		
+	def command_SIZE(self,args):
+		if len(args) != 1:
+			self.send_message(500,"SZIE filename")
+			return
+		msg = "\n%s size: %s"%(args[0],str(os.path.getsize(args[0])))
+		self.send_message(231,msg)
+		
+	def command_STORE(self,args):
+		if len(args) != 1:
+			self.send_message(500,"STORE filename")
+		with open('test/' + args[0],'w') as fp:
+			while True:
+				data = self.fd.recv(2048).decode()
+				if not data:
+					break
+				fp.write(data)
+				fp.flush()
+		self.send_message(200,"%s store finished!"%args[0])
+
+	def command_RETR(self,args):
+		if len(args) != 1:
+			self.send_message(500,"RETR filename")
+			return
+		with open(args[0],'r') as fp:
+			while  True:
+				data = fp.read(2048)
+				if not data:
+					break
+				self.fd.send(data)
+		logger.info("%s send finished!"%args[0])
+		
+	def command_BYE(self,args):
+		self.running = False
+		self.send_message(200, "OK")
+		self.fd.close()
+
+	def start(self):
+		try:
+			while self.running:
+				success,command,args = self.recv()
+				print success,command,args
+				if not success:
+					logger.info("recv no command")
+					self.send_message(500,"recv no command")
+					continue
+				else:
+					command = command.upper()
+					if command not in self.command_list.keys():
+						self.send_message(500,"command not supported yet")
+						logger.error("command not supported yet")
+						continue
+					try:
+						logger.info("[%s] executing"%command)
+						self.command_list[command](args)
+					except Exception as e:
+						logger.error(e)
+						self.send_message(500,"command execute error")
+						logger.error("command execute error")
+						continue
+
+		except Exception as e:
+			logger.error(e)
+			logger.error("in ftp_tcp start")
+		finally:
+			self.fd.close()
+
+		logger.info("FTP UDP connnection done.")
+		return True
+
+
+	def send_message(self,code,msg):
+		self.fd.send("[%s]:%s\n"%(str(code),msg))
+
+	def recv(self):
+		try:
+			success,command, args = True, '', ''
+			data = self.fd.recv(1024)
+
+			if not data:
+				success = False
+				return success,command,args
+			data_split = [item.strip() for item in data.split()]
+
+			command,args = data_split[0],data_split[1:] if len(data_split) > 1 else [] 
+		except Exception as e:
+			logger.error(e)
+			logger.error("in tcp recv")
+			success = False
+		return success, command, args
+
+		
+
 class FTP_UDP_Connection(Connection):
 	def __init__(self,fd):
-		super(FTP_UDP_Connection,self).__init__()
-		self.fd = fd
-		self.running = True
-
-		self.command_list = {"LIST":self.command_LIST,
-							 "SIZE":self.command_SIZE,
-							 "STORE":self.command_STORE,
-							 "RETR":self.command_RETR,
-							 "BYE":self.command_BYE
-		}
+		super(FTP_UDP_Connection,self).__init__(fd)
 
 	def command_LIST(self,client_addr,args):
 
 		# self.send_message(client_addr,125, "OK")
-		template = "%s%s%s------- %04u %8s %8s %8lu %s %s\n"
-		message = ""
-		for filename in os.listdir('.'):
-			path =  './' + filename
-			if os.path.isfile(path) or os.path.isdir(path): # ignores link or block file
-				status = os.stat(path)
-				msg = template % (
-					'd' if os.path.isdir(path) else '-',
-					'r', 'w', 1, '0', '0', 
-					status[stat.ST_SIZE], 
-					time.strftime("%b %d  %Y", time.localtime(status[stat.ST_MTIME])), 
-					filename)
-				message += msg
-		self.send_message(client_addr,220,message)
+		try:
+			template = "%s%s%s------- %04u %8s %8s %8lu %s %s\n"
+			message = ""
+			for filename in os.listdir('.'):
+				path =  './' + filename
+				if os.path.isfile(path) or os.path.isdir(path): # ignores link or block file
+					status = os.stat(path)
+					msg = template % (
+						'd' if os.path.isdir(path) else '-',
+						'r', 'w', 1, '0', '0', 
+						status[stat.ST_SIZE], 
+						time.strftime("%b %d  %Y", time.localtime(status[stat.ST_MTIME])), 
+						filename)
+					message += msg
+			self.send_message(client_addr,220,message)
+		except Exception as e:
+			self.send_message(client_addr,500,"listdir error")
+			logger.error(e)
 		# self.send_message(client_addr,226, "Limit")
 		# self.send_message(client_addr,200,"OK")
 		
@@ -151,7 +249,7 @@ class FTP_UDP_Connection(Connection):
 	def command_STORE(self,client_addr,args):
 		if len(args) != 1:
 			self.send_message(client_addr,500,"STORE filename")
-		with open(args[0],'w') as fp:
+		with open('test/' + args[0],'w') as fp:
 			while True:
 				data,addr = self.fd.recvfrom(2048)
 				if not data:
@@ -203,13 +301,6 @@ class FTP_UDP_Connection(Connection):
 		logger.info("FTP UDP connnection done.")
 		return True
 
-			
-
-	def stop(self):
-		self.running = False
-	def say_hello(self):
-		pass
-		#self.send_message()
 
 	def send_message(self,client_addr,code,msg):
 		self.fd.sendto("[%s]:%s\n"%(str(code),msg),client_addr)
@@ -232,7 +323,7 @@ class FTP_UDP_Connection(Connection):
 		return client_addr,success, command, args
 
 class HTTPThread(threading.Thread):
-	def __init__(self, fd, remote_ip):
+	def __init__(self, fd):
 		threading.Thread.__init__(self)
 		self.http = HTTPConnection(fd, remote_ip)
 	
@@ -243,12 +334,12 @@ class HTTPThread(threading.Thread):
 
 class FTP_TCP_Thread(threading.Thread):
 	'''FTPConnection Thread Wrapper'''
-	def __init__(self, fd, remote_ip):
+	def __init__(self, fd):
 		threading.Thread.__init__(self)
-		self.ftp = FTP_TCP_Connection(fd, remote_ip)
+		self.ftp_tcp = FTP_TCP_Connection(fd)
 
 	def run(self):
-		self.ftp.start()
+		self.ftp_tcp.start()
 		logger.info("Thread done")
 
 class FTP_UDP_Thread(threading.Thread):
@@ -292,11 +383,15 @@ def main_server():
 		rfds_list,wfds_list,xfds_list = select.select(read_fds,[],[])
 		if listen_tcp_fd in rfds_list:
 			tcp_client_fd,tcp_client_addr = listen_tcp_fd.accept()
+			
+			tcp_thread = FTP_TCP_Thread(tcp_client_fd)
+			tcp_thread.start()
 
 			#start process thread
 		if listen_http_fd in rfds_list:
 			http_client_fd,http_client_addr = listen_http_fd.accept()
-
+			http_thread = HTTPThread(http_client_fd,http_client_addr)
+			http_thread.start()
 
 	
 

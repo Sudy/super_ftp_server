@@ -21,6 +21,7 @@ class TCPClient(Client):
 		try:
 			self.tcp_socket.connect((host,tcp_port))
 		except Exception as e:
+			print "here!"
 			logger.error(e)
 			return
 
@@ -32,30 +33,62 @@ class TCPClient(Client):
 			message = raw_input('>')
 			if not message:
 				break
-			try:
-				self.tcp_socket.send(message)
-			except Exception as e:
-				logger.error(e)
-			finally:
-				self.tcp_socket.close()
 
-			try:
-				data = self.tcp_socket.recv(2048)
+			cmd,args = self.parse_command(message)
+			if cmd.upper() in ["RETR","STORE"]:
+				try:
+					self.tcp_socket.send(message)
+					self.command_list[cmd.upper()](args)
+				except Exception as e:
+					logger.error(e)
+					logger.error("executing %s error"%cmd)
+
+			else:
+				try:
+					self.tcp_socket.send(message)
+				except Exception as e:
+					logger.error(e)
+					self.running = False
+				
+				try:
+					data = self.tcp_socket.recv(2048)
+					if not data:
+						self.tcp_socket.close()
+						logger.info("tcp recvd no data,closing")
+					print data
+				except Exception as e:
+					logger.error(e)
+
+	def handle_STORE(self,args):
+		if len(args) != 1:
+			logger.error("store filename")
+			return
+		with open(args[0],'r') as fp:
+			while True:
+				data = fp.read(2048)
 				if not data:
-					logger.info("tcp connection recvd no data,closing")
-					self.tcp_socket.close()
-				print data
-			except Exception as e:
-				logger.error(e)
-			finally:
-				self.tcp_socket.close()
+					break
+				self.tcp_socket.send(data)
+		logger.info("send file %s succeed"%args[0])
+
+	def handle_RETR(self,args):
+		if len(args) != 1:
+			logger.error("store filename")
+			return
+		with open("test/" + args[0],'w') as fp:
+			while True:
+				data = self.tcp_socket.recv(2048).decode()
+				if len(data) <= 0:
+					break
+				fp.write(data)
+				fp.flush()
+			logger.info("recv file %s finished!"%args[0])
 
 class UDPClient(Client):
 	def __init__(self):
 		super(UDPClient, self).__init__()
 		self.udp_socket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 		self.running = True
-		self.command_list = {"STORE":self.handle_STORE,"RETR":self.handle_RETR}
 		
 	def start(self):
 		while self.running:
@@ -66,6 +99,7 @@ class UDPClient(Client):
 			cmd,args = self.parse_command(message)
 			if cmd.upper() in ["RETR","STORE"]:
 				try:
+					self.udp_socket.sendto(message,(host,udp_port))
 					self.command_list[cmd.upper()](args)
 				except:
 					logger.error("executing %s error"%cmd)
@@ -97,20 +131,30 @@ class UDPClient(Client):
 			data_buf += message
 		return data_buf,addr
 
-	def handle_STORE(self,filename):
-		with open(filename,'r') as fp:
+	def handle_STORE(self,args):
+		if len(args) != 1:
+			logger.error("store filename")
+			return
+		with open(args[0],'r') as fp:
 			while True:
 				data = fp.read(2048)
 				if not data:
 					break
 				self.udp_socket.sendto(data,(host,udp_port))
-		logger.info("send file %s succeed"%filename)
+		logger.info("send file %s succeed"%args[0])
 
-	def handle_RETR(self,filename):
-		with open(filename,'w') as fp:
-			data,addr = self.recv(2048)
-			fp.write(data)
-			fp.flush()
+	def handle_RETR(self,args):
+		if len(args) != 1:
+			logger.error("store filename")
+			return
+		with open('test/' + args[0],'w') as fp:
+			while True:
+				data,addr = self.udp_socket.recvfrom(2048)
+				if not data:
+					break
+				fp.write(data)
+				fp.flush()
+
 						
 def main_client():
 	client = None
